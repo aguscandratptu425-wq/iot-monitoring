@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Suhu & Kelembapan</title>
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; }
+        
+        /* Kartu Sensor */
+        .cards { display: flex; justify-content: space-between; gap: 15px; margin-bottom: 20px; }
+        .card { flex: 1; background: #e0f7fa; padding: 20px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; border: 2px solid #b2ebf2; }
+        .card span { display: block; font-size: 14px; font-weight: normal; color: #555; }
+        
+        /* Alarm & Status */
+        #status-box { text-align: center; padding: 15px; font-size: 20px; font-weight: bold; background: #c8e6c9; color: #2e7d32; border-radius: 8px; margin-bottom: 20px; transition: 0.3s; }
+        .bahaya { background: #ffcdd2 !important; color: #c62828 !important; animation: kedip 1s infinite; }
+        @keyframes kedip { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+        /* Kontrol Interval & Logging */
+        .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; background: #f5f5f5; padding: 15px; border-radius: 8px; align-items: center; }
+        input, button { padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 16px; }
+        button { cursor: pointer; background: #1976d2; color: white; font-weight: bold; border: none; }
+        button:hover { background: #115293; }
+        #btnToggle.stop { background: #d32f2f; }
+        #btnToggle.stop:hover { background: #9a0007; }
+
+        /* Tabel */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
+        th { background-color: #1976d2; color: white; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📡 IoT Dashboard Monitoring</h1>
+
+    <div id="status-box">STATUS: NORMAL</div>
+    <audio id="alarm-sound" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" preload="auto"></audio>
+
+    <div class="cards">
+        <div class="card"><span id="valDHT">0</span><span>Suhu DHT (°C)</span></div>
+        <div class="card"><span id="valLM35">0</span><span>Suhu LM35 (°C)</span></div>
+        <div class="card"><span id="valHum">0</span><span>Kelembapan (%)</span></div>
+    </div>
+
+    <div class="controls">
+        <label>Interval (Detik):</label>
+        <input type="number" id="inputInterval" value="5" min="1">
+        <button onclick="setIntervalTime()">Set Interval</button>
+        <button id="btnToggle" onclick="toggleLogging()">STOP LOGGING</button>
+    </div>
+
+    <canvas id="myChart" height="100"></canvas>
+
+    <table id="dataTable">
+        <thead>
+            <tr>
+                <th>Waktu</th>
+                <th>Suhu DHT (°C)</th>
+                <th>Suhu LM35 (°C)</th>
+                <th>Kelembapan (%)</th>
+            </tr>
+        </thead>
+        <tbody>
+            </tbody>
+    </table>
+</div>
+
+<script>
+    // --- 1. CONFIG FIREBASE ---
+    const firebaseConfig = {
+        databaseURL: "https://monitorsuhu-41bc1-default-rtdb.firebaseio.com" // Link Firebase Bos
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // Variabel Penampung Data Realtime
+    let currentDHT = 0, currentLM35 = 0, currentHum = 0;
+    
+    // Variabel Logging
+    let loggingIntervalId = null;
+    let isLogging = true;
+    let intervalTime = 5000; // Default 5 detik
+
+    // --- 2. TARIK DATA DARI FIREBASE (REALTIME) ---
+    db.ref().on('value', (snapshot) => {
+        const data = snapshot.val();
+        if(data) {
+            currentDHT = data.suhu_dht || 0;
+            currentLM35 = data.suhu_lm35 || 0;
+            currentHum = data.kelembapan || 0;
+
+            // Update Angka di Layar
+            document.getElementById('valDHT').innerText = currentDHT;
+            document.getElementById('valLM35').innerText = currentLM35;
+            document.getElementById('valHum').innerText = currentHum;
+
+            cekKondisiKhusus();
+        }
+    });
+
+    // --- 3. SYARAT 5 & 7: KONDISI KHUSUS & ALARM ---
+    function cekKondisiKhusus() {
+        const statusBox = document.getElementById('status-box');
+        const alarm = document.getElementById('alarm-sound');
+        
+        // Misal: Bahaya jika suhu DHT lebih dari 33 derajat
+        if (currentDHT > 33) {
+            statusBox.innerText = "⚠️ BAHAYA! SUHU TINGGI!";
+            statusBox.classList.add('bahaya');
+            // Bunyikan Alarm (Akan bunyi jika browser mengizinkan autoplay)
+            alarm.play().catch(()=>console.log("Audio diblokir browser, klik layar dulu."));
+        } else {
+            statusBox.innerText = "STATUS: NORMAL";
+            statusBox.classList.remove('bahaya');
+            alarm.pause();
+            alarm.currentTime = 0;
+        }
+    }
+
+    // --- 4. SYARAT 2: SETUP GRAFIK (CHART.JS) ---
+    const ctx = document.getElementById('myChart').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [], // Waktu
+            datasets: [
+                { label: 'DHT (°C)', borderColor: '#e53935', data: [], fill: false },
+                { label: 'LM35 (°C)', borderColor: '#ff9800', data: [], fill: false },
+                { label: 'Kelembapan (%)', borderColor: '#1e88e5', data: [], fill: false }
+            ]
+        }
+    });
+
+    // --- 5. FUNGSI LOGGING (SIMPAN KE TABEL & GRAFIK) ---
+    function logData() {
+        if (!isLogging) return;
+
+        const now = new Date();
+        const waktu = now.toLocaleTimeString();
+
+        // Update Tabel (Syarat 1)
+        const tbody = document.querySelector("#dataTable tbody");
+        const row = `<tr><td>${waktu}</td><td>${currentDHT}</td><td>${currentLM35}</td><td>${currentHum}</td></tr>`;
+        tbody.insertAdjacentHTML('afterbegin', row); // Taruh di paling atas
+
+        // Update Grafik
+        chart.data.labels.push(waktu);
+        chart.data.datasets[0].data.push(currentDHT);
+        chart.data.datasets[1].data.push(currentLM35);
+        chart.data.datasets[2].data.push(currentHum);
+        
+        // Batasi grafik maksimal 15 titik biar gak sempit
+        if (chart.data.labels.length > 15) {
+            chart.data.labels.shift();
+            chart.data.datasets.forEach(dataset => dataset.data.shift());
+        }
+        chart.update();
+    }
+
+    // --- 6. SYARAT 3: SETTING INTERVAL ---
+    function setIntervalTime() {
+        const inputVal = document.getElementById('inputInterval').value;
+        if (inputVal && inputVal > 0) {
+            intervalTime = inputVal * 1000; // Ubah detik ke milidetik
+            alert("Interval diubah jadi " + inputVal + " detik!");
+            restartLogging();
+        }
+    }
+
+    // --- 7. SYARAT 4: START/STOP LOGGING ---
+    function toggleLogging() {
+        const btn = document.getElementById('btnToggle');
+        isLogging = !isLogging;
+        if (isLogging) {
+            btn.innerText = "STOP LOGGING";
+            btn.classList.remove('stop');
+            restartLogging();
+        } else {
+            btn.innerText = "START LOGGING";
+            btn.classList.add('stop');
+            clearInterval(loggingIntervalId);
+        }
+    }
+
+    function restartLogging() {
+        clearInterval(loggingIntervalId);
+        if (isLogging) {
+            logData(); // Log pertama kali
+            loggingIntervalId = setInterval(logData, intervalTime);
+        }
+    }
+
+    // Mulai saat web dibuka
+    restartLogging();
+
+</script>
+</body>
+</html>
